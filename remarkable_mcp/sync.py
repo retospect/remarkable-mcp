@@ -10,6 +10,7 @@ Based on the protocol used by ddvk/rmapi.
 import base64
 import hashlib
 import json
+import struct
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +30,37 @@ ROOT_URL = f"{SYNC_HOST}/sync/v4/root"
 ROOT_PUT_URL = f"{SYNC_HOST}/sync/v3/root"
 FILES_URL = f"{SYNC_HOST}/sync/v3/files"
 UPLOAD_URL = f"{SYNC_HOST}/doc/v2/files"
+
+
+# ── CRC32C (Castagnoli) ──
+# Used by the reMarkable Cloud API for blob upload checksums.
+# Pure-Python table-driven implementation — no external deps needed.
+_CRC32C_TABLE = None
+
+
+def _make_crc32c_table():
+    """Build the CRC32C lookup table (polynomial 0x1EDC6F41)."""
+    table = []
+    for i in range(256):
+        crc = i
+        for _ in range(8):
+            if crc & 1:
+                crc = (crc >> 1) ^ 0x82F63B78
+            else:
+                crc >>= 1
+        table.append(crc)
+    return table
+
+
+def _crc32c(data: bytes) -> int:
+    """Compute CRC32C checksum of data."""
+    global _CRC32C_TABLE
+    if _CRC32C_TABLE is None:
+        _CRC32C_TABLE = _make_crc32c_table()
+    crc = 0xFFFFFFFF
+    for byte in data:
+        crc = _CRC32C_TABLE[(crc ^ byte) & 0xFF] ^ (crc >> 8)
+    return crc ^ 0xFFFFFFFF
 
 
 class GenerationConflictError(Exception):
@@ -320,11 +352,16 @@ class RemarkableClient:
 
     def _put_blob(self, file_hash: str, filename: str, data: bytes) -> None:
         """Upload a blob by its SHA-256 hash."""
+        crc_val = _crc32c(data)
+        crc_b64 = base64.b64encode(struct.pack(">I", crc_val)).decode()
         response = self._request(
             f"{FILES_URL}/{file_hash}",
             method="PUT",
             data=data,
-            extra_headers={"rm-filename": filename},
+            extra_headers={
+                "rm-filename": filename,
+                "x-goog-hash": f"crc32c={crc_b64}",
+            },
             timeout=120,
         )
         response.raise_for_status()
