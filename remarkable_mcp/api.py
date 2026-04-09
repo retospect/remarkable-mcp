@@ -19,6 +19,11 @@ REMARKABLE_USE_USB_WEB = os.environ.get("REMARKABLE_USE_USB_WEB", "").lower() in
     "true",
     "yes",
 )
+REMARKABLE_ENABLE_WRITE = os.environ.get("REMARKABLE_ENABLE_WRITE", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
 REMARKABLE_CONFIG_DIR = Path.home() / ".remarkable"
 REMARKABLE_TOKEN_FILE = REMARKABLE_CONFIG_DIR / "token"
 CACHE_DIR = REMARKABLE_CONFIG_DIR / "cache"

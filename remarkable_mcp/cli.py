@@ -44,6 +44,10 @@ Examples:
   # SSH with custom host (e.g., using SSH config)
   REMARKABLE_SSH_HOST="remarkable" uvx remarkable-mcp --ssh
 
+  # Enable write tools (upload, delete, mkdir)
+  uvx remarkable-mcp --write
+  REMARKABLE_ENABLE_WRITE=1 uvx remarkable-mcp
+
 USB Web Interface Environment Variables:
   REMARKABLE_USB_HOST      USB web interface host (default: http://10.11.99.1)
   REMARKABLE_USB_TIMEOUT   Request timeout in seconds (default: 10)
@@ -53,6 +57,9 @@ SSH Environment Variables:
   REMARKABLE_SSH_USER      SSH user (default: root)
   REMARKABLE_SSH_PORT      SSH port (default: 22)
   REMARKABLE_SSH_PASSWORD  SSH password (optional, requires sshpass)
+
+Write Environment Variables:
+  REMARKABLE_ENABLE_WRITE  Enable write tools: upload, delete, mkdir (default: off)
 
 Security Note:
   For better security, set up SSH key authentication instead of using
@@ -73,6 +80,11 @@ Security Note:
         "--usb",
         action="store_true",
         help="Use USB web interface (connect via USB cable, enable in Storage Settings)",
+    )
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="Enable write tools (upload, delete, mkdir). Also via REMARKABLE_ENABLE_WRITE=1",
     )
 
     args = parser.parse_args()
@@ -111,16 +123,22 @@ Security Note:
     elif args.usb:
         # USB web mode - set environment variable and run server
         os.environ["REMARKABLE_USE_USB_WEB"] = "1"
+        if args.write:
+            os.environ["REMARKABLE_ENABLE_WRITE"] = "1"
         from remarkable_mcp.server import run
 
         run()
     elif args.ssh:
         # SSH mode - set environment variable and run server
         os.environ["REMARKABLE_USE_SSH"] = "1"
+        if args.write:
+            os.environ["REMARKABLE_ENABLE_WRITE"] = "1"
         from remarkable_mcp.server import run
 
         run()
     else:
+        if args.write:
+            os.environ["REMARKABLE_ENABLE_WRITE"] = "1"
         # MCP server mode - only now import the full server
         from remarkable_mcp.server import run
 

@@ -63,10 +63,11 @@ def _build_instructions() -> str:
     has_google_vision = bool(os.environ.get("GOOGLE_VISION_API_KEY"))
     ocr_backend = os.environ.get("REMARKABLE_OCR_BACKEND", "auto").lower()
 
-    instructions = """# reMarkable MCP Server
+    write_mode = os.environ.get("REMARKABLE_ENABLE_WRITE", "").lower() in ("1", "true", "yes")
 
-Access documents from your reMarkable tablet. All operations are read-only.
-
+    mode_desc = "Read and write" if write_mode else "Read-only"
+    instructions = f"# reMarkable MCP Server\n\nAccess documents from your reMarkable tablet. {mode_desc} access.\n"
+    instructions += """
 ## Available Tools
 
 - `remarkable_browse(path, query)` - Browse folders or search for documents
@@ -110,6 +111,24 @@ Documents are registered as resources for direct access:
 - `remarkable:///{path}.txt` - Get full extracted text content in one request
 - `remarkableimg:///{path}.page-{N}.png` - Get PNG image of page N (notebooks only)
 - Use resources when you need complete document content without pagination
+"""
+
+    if write_mode:
+        instructions += """
+## Write Tools (Enabled)
+
+- `remarkable_put(file_path, name, overwrite)` - Upload a PDF or EPUB to reMarkable
+- `remarkable_delete(document)` - Delete a document or folder (moves to trash)
+- `remarkable_mkdir(name)` - Create a new folder
+
+### Uploading Documents
+1. Use `remarkable_put("/path/to/file.pdf")` to upload a PDF
+2. Use `remarkable_put("/path/to/file.pdf", name="Custom Name")` to set a display name
+3. Use `remarkable_put("/path/to/file.pdf", overwrite=True)` to replace an existing document
+
+### Organizing
+1. Use `remarkable_mkdir("Folder Name")` to create folders
+2. Use `remarkable_delete("Document Name")` to move items to trash
 """
 
     # Add SSH-specific instructions

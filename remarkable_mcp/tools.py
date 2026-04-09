@@ -1,8 +1,9 @@
 """
 MCP Tools for reMarkable tablet access.
 
-All tools are read-only and idempotent - they only retrieve data from the
-reMarkable Cloud and do not modify any documents.
+Read tools are always available and idempotent.
+Write tools (upload, delete, mkdir) are optionally enabled via --write flag
+or REMARKABLE_ENABLE_WRITE=1 environment variable.
 """
 
 import base64
@@ -22,6 +23,7 @@ from mcp.types import (
 )
 
 from remarkable_mcp.api import (
+    REMARKABLE_ENABLE_WRITE,
     REMARKABLE_TOKEN,
     download_raw_file,
     get_file_type,
@@ -143,6 +145,29 @@ RECENT_ANNOTATIONS = ToolAnnotations(
 STATUS_ANNOTATIONS = ToolAnnotations(
     title="Check reMarkable Connection",
     **_BASE_ANNOTATIONS,
+)
+
+# Annotations for write operations
+_WRITE_ANNOTATIONS = {
+    "readOnlyHint": False,
+    "destructiveHint": False,
+    "idempotentHint": False,
+    "openWorldHint": False,
+}
+
+PUT_ANNOTATIONS = ToolAnnotations(
+    title="Upload to reMarkable",
+    **_WRITE_ANNOTATIONS,
+)
+
+DELETE_ANNOTATIONS = ToolAnnotations(
+    title="Delete from reMarkable",
+    **{**_WRITE_ANNOTATIONS, "destructiveHint": True},
+)
+
+MKDIR_ANNOTATIONS = ToolAnnotations(
+    title="Create reMarkable Folder",
+    **{**_WRITE_ANNOTATIONS, "idempotentHint": True},
 )
 
 IMAGE_ANNOTATIONS = ToolAnnotations(
@@ -1655,3 +1680,205 @@ async def remarkable_image(
             message=str(e),
             suggestion="Check remarkable_status() to verify your connection.",
         )
+
+
+# =============================================================================
+# Write Tools (conditionally registered)
+# =============================================================================
+
+if REMARKABLE_ENABLE_WRITE:
+
+    @mcp.tool(annotations=PUT_ANNOTATIONS)
+    async def remarkable_put(
+        file_path: str,
+        name: Optional[str] = None,
+        overwrite: bool = False,
+    ) -> str:
+        """Upload a PDF or EPUB file to reMarkable.
+
+        <usecase>Upload a document to your reMarkable tablet from a local file path.</usecase>
+
+        <instructions>
+        - file_path: Absolute path to a .pdf or .epub file on disk.
+        - name: Display name on the tablet. Defaults to the filename stem.
+        - overwrite: If True and a document with the same name exists, delete it first.
+        </instructions>
+
+        <output>
+        JSON with upload confirmation including document ID and name.
+        </output>
+        """
+        try:
+            path = Path(file_path)
+            if not path.exists():
+                return make_error(
+                    error_type="file_not_found",
+                    message=f"File not found: {file_path}",
+                    suggestion="Provide an absolute path to an existing .pdf or .epub file.",
+                )
+
+            ext = path.suffix.lower().lstrip(".")
+            if ext not in ("pdf", "epub"):
+                return make_error(
+                    error_type="unsupported_format",
+                    message=f"Unsupported file type: .{ext}",
+                    suggestion="Only .pdf and .epub files can be uploaded to reMarkable.",
+                )
+
+            display_name = name or path.stem
+            file_data = path.read_bytes()
+
+            client = get_rmapi()
+
+            # Handle overwrite: find and delete existing document with same name
+            if overwrite:
+                try:
+                    collection = client.get_meta_items()
+                    for item in collection:
+                        if (
+                            not item.is_folder
+                            and item.VissibleName == display_name
+                        ):
+                            client.delete_document(item)
+                            break
+                except Exception:
+                    pass  # Best-effort delete; upload will proceed regardless
+
+            doc = client.upload(display_name, file_data, file_type=ext)
+
+            return make_response(
+                {
+                    "action": "uploaded",
+                    "id": doc.id,
+                    "name": doc.name,
+                    "type": ext,
+                    "size_bytes": len(file_data),
+                },
+                f"Uploaded '{display_name}' ({ext}) to reMarkable. "
+                f"The document will appear in your root folder after sync.",
+            )
+
+        except Exception as e:
+            return make_error(
+                error_type="upload_failed",
+                message=str(e),
+                suggestion="Check remarkable_status() to verify your connection.",
+            )
+
+    @mcp.tool(annotations=DELETE_ANNOTATIONS)
+    async def remarkable_delete(
+        document: str,
+    ) -> str:
+        """Delete a document or folder from reMarkable (moves to trash).
+
+        <usecase>Remove a document or folder from your reMarkable tablet.</usecase>
+
+        <instructions>
+        - document: The exact name of the document or folder to delete.
+        - This is a soft delete (moves to trash). It can be recovered from the
+          tablet's trash folder.
+        </instructions>
+
+        <output>
+        JSON confirming the deletion.
+        </output>
+        """
+        try:
+            client = get_rmapi()
+            collection = client.get_meta_items()
+            items_by_id = get_items_by_id(collection)
+
+            # Find the document by name (case-insensitive)
+            target = None
+            for item in collection:
+                if item.VissibleName.lower() == document.lower():
+                    target = item
+                    break
+
+            if target is None:
+                similar = find_similar_documents(document, collection)
+                return make_error(
+                    error_type="document_not_found",
+                    message=f"No document or folder named '{document}' found.",
+                    suggestion="Use remarkable_browse() to see available documents.",
+                    did_you_mean=similar if similar else None,
+                )
+
+            item_path = get_item_path(target, items_by_id)
+            item_type = "folder" if target.is_folder else "document"
+
+            client.delete_document(target)
+
+            return make_response(
+                {
+                    "action": "deleted",
+                    "name": target.VissibleName,
+                    "path": item_path,
+                    "type": item_type,
+                },
+                f"Moved '{target.VissibleName}' to trash. "
+                f"It can be recovered from the tablet's trash folder.",
+            )
+
+        except Exception as e:
+            return make_error(
+                error_type="delete_failed",
+                message=str(e),
+                suggestion="Check remarkable_status() to verify your connection.",
+            )
+
+    @mcp.tool(annotations=MKDIR_ANNOTATIONS)
+    async def remarkable_mkdir(
+        name: str,
+    ) -> str:
+        """Create a new folder on reMarkable.
+
+        <usecase>Create a folder to organize documents on your reMarkable tablet.</usecase>
+
+        <instructions>
+        - name: The name for the new folder.
+        - The folder is created at the root level.
+        </instructions>
+
+        <output>
+        JSON confirming folder creation with its ID.
+        </output>
+        """
+        try:
+            client = get_rmapi()
+
+            # Check if folder with this name already exists
+            try:
+                collection = client.get_meta_items()
+                for item in collection:
+                    if item.is_folder and item.VissibleName.lower() == name.lower():
+                        return make_response(
+                            {
+                                "action": "already_exists",
+                                "id": item.ID,
+                                "name": item.VissibleName,
+                            },
+                            f"Folder '{item.VissibleName}' already exists.",
+                        )
+            except Exception:
+                pass  # Best-effort check; proceed with creation
+
+            doc = client.upload_folder(name)
+
+            return make_response(
+                {
+                    "action": "created",
+                    "id": doc.id,
+                    "name": doc.name,
+                    "type": "folder",
+                },
+                f"Created folder '{name}' on reMarkable. "
+                f"It will appear in your root folder after sync.",
+            )
+
+        except Exception as e:
+            return make_error(
+                error_type="mkdir_failed",
+                message=str(e),
+                suggestion="Check remarkable_status() to verify your connection.",
+            )
